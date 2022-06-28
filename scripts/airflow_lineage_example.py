@@ -6,7 +6,9 @@ import datahub.emitter.mce_builder as builder
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.metadata.com.linkedin.pegasus2avro.datajob import DataJobInfoClass
-from datahub.metadata.schema_classes import ChangeTypeClass, DataFlowInfoClass, DataJobInputOutputClass
+from datahub.metadata.com.linkedin.pegasus2avro.dataset import UpstreamLineage
+from datahub.metadata.schema_classes import ChangeTypeClass, DataFlowInfoClass, DataJobInputOutputClass, UpstreamClass, \
+    DatasetLineageTypeClass
 
 
 def init_emitter(host: str):
@@ -109,6 +111,31 @@ def construct_bq_to_bq_lineage(src_table_name: List[str], target_table_name: str
     emitter.emit_mcp(datajob_input_output_mcp)
 
 
+def construct_bq_table_dependency(src_table_name: List[str], target_table_name: str,
+                                  emitter: DatahubRestEmitter):
+    upstream_tables: List[UpstreamClass] = []
+
+    for name in src_table_name:
+        upstream_tables.append(UpstreamClass(
+            dataset=builder.make_dataset_urn("bigquery", name, "PROD"),
+            type=DatasetLineageTypeClass.TRANSFORMED,
+        ))
+
+    # Construct a lineage object.
+    upstream_lineage = UpstreamLineage(upstreams=upstream_tables)
+
+    # Construct a MetadataChangeProposalWrapper object.
+    lineage_mcp = MetadataChangeProposalWrapper(
+        entityType="dataset",
+        changeType=ChangeTypeClass.UPSERT,
+        entityUrn=builder.make_dataset_urn("bigquery", target_table_name),
+        aspectName="upstreamLineage",
+        aspect=upstream_lineage,
+    )
+
+    emitter.emit_mcp(lineage_mcp)
+
+
 if __name__ == "__main__":
     df = pd.read_csv("bq_to_bq_lineage.csv")
     em = init_emitter("http://localhost:8080")
@@ -137,5 +164,15 @@ if __name__ == "__main__":
         try:
             src_tables = query.Query(df["query"][i]).full_table_ids
             construct_bq_to_bq_lineage(src_tables, df["target_table"][i], em, job_urn)
+        except:
+            continue
+
+    # Extract bq-to-bq dependency
+    for i in range(len(df)):
+        src_tables: list = []
+
+        try:
+            src_tables = query.Query(df["query"][i]).full_table_ids
+            construct_bq_table_dependency(src_tables, df["target_table"][i], em)
         except:
             continue
